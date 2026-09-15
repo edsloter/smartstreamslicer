@@ -1,0 +1,48 @@
+# Build artifacts (covers build/, build_linux/, build_shared/, etc.)
+/build*/
+dist/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.manifest
+
+# Generated split files (sss output)
+*.sss[0-9][0-9][0-9]*
+sss_output/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+Makefile
+*.cmake
+
+# Compilers/editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Testing
+*.log
+test-results/
+
+# Compiled binaries
+bin/
+out/
+
+# MSVC-specific
+*.vcxproj.user
+*.vcxproj.filters.user

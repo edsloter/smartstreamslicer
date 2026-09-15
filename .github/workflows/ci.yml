@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.os }} / static=${{ matrix.static }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            static: 'ON'
+          - os: ubuntu-latest
+            static: 'OFF'
+          - os: windows-latest
+            static: 'ON'
+          - os: windows-latest
+            static: 'OFF'
+    env:
+      SMOKE_MANIFEST_DIR: ${{ github.workspace }}/manifest-${{ matrix.os }}-${{ matrix.static }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build deps (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build ragel g++
+
+      - name: Install build deps (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-ragel
+
+      - name: Configure
+        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSSS_STATIC=${{ matrix.static }}
+
+      - name: Build
+        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        run: cmake --build build --config Release
+
+      - name: Smoke test (encode/decode, determinism, corruption, manifest)
+        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        run: bash tests/smoke.sh ${{ runner.os == 'Windows' && 'build/sss.exe' || 'build/sss' }}
+
+      - name: Upload manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-${{ matrix.os }}-${{ matrix.static }}
+          path: manifest-${{ matrix.os }}-${{ matrix.static }}/manifest.sha256
+
+  compare-manifests:
+    name: Verify identical splits across all OS/build flavors
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all manifests
+        uses: actions/download-artifact@v4
+        with:
+          path: manifests
+          pattern: manifest-*
+      - name: Diff manifests (all 4 must be byte-identical)
+        shell: bash
+        run: |
+          set -euo pipefail
+          names=$(find manifests -name manifest.sha256 | sort)
+          echo "Found manifests:"
+          echo "$names"
+          count=$(echo "$names" | wc -l)
+          [ "$count" -eq 4 ] || { echo "expected 4 manifests, got $count"; exit 1; }
+          distinct=$(echo "$names" | xargs sha256sum | awk '{print $1}' | sort -u | wc -l)
+          if [ "$distinct" -ne 1 ]; then
+            echo "ERROR: maps differ across platforms/builds:"
+            echo "$names" | xargs sha256sum
+            exit 1
+          fi
+          echo "OK: identical splits on all platforms and build flavors"
