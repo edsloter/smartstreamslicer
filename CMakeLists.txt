@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(SmartStreamSlicer VERSION 0.0.1 LANGUAGES C CXX)
+project(SmartStreamSlicer VERSION 0.1.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -47,22 +47,23 @@ if(SSS_ENABLE_VECTORSCAN)
   # at a usable boost (boost/version.hpp present), download Boost 1.84.0
   # release headers automatically and extract them into the build tree.
   if(NOT DEFINED BOOST_ROOT OR NOT EXISTS "${BOOST_ROOT}/boost/version.hpp")
-    message(STATUS "Boost headers not found via BOOST_ROOT; downloading Boost 1.84.0 headers...")
     set(_boost_dl  "${CMAKE_CURRENT_BINARY_DIR}/_deps/boost_1_84_0.tar.gz")
     set(_boost_dir "${CMAKE_CURRENT_BINARY_DIR}/_deps/boost_1_84_0")
     if(NOT EXISTS "${_boost_dir}/boost/version.hpp")
       if(NOT EXISTS "${_boost_dl}")
+        message(STATUS "BOOST_ROOT not set to usable Boost 1.84 headers; downloading ${_boost_dl}")
         file(DOWNLOAD
           https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.gz
           "${_boost_dl}"
           EXPECTED_HASH SHA256=A5800F405508F5DF8114558CA9855D2640A2DE8F0445F051FA1C7C3383045724
           SHOW_PROGRESS)
       endif()
+      message(STATUS "Extracting Boost 1.84 headers from ${_boost_dl}")
       file(ARCHIVE_EXTRACT INPUT "${_boost_dl}"
            DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/_deps")
     endif()
     set(BOOST_ROOT "${_boost_dir}"
-        CACHE PATH "Boost root (downloaded headers auto-extracted)" FORCE)
+        CACHE PATH "Boost root (headers downloaded/extracted as needed)" FORCE)
   endif()
   if(NOT DEFINED RAGEL)
     set(RAGEL "ragel" CACHE FILEPATH "Ragel state machine compiler")

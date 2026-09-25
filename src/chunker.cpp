@@ -38,11 +38,29 @@ SplitEnv make_split_env(const Options& o) {
     e.target = base;
     e.min_sz = o.min_sz != 0 ? o.min_sz : base / 4 * 3;
     e.max_sz = o.max_sz != 0 ? o.max_sz : base / 4 * 5;
+    e.max_mem = o.max_mem;
 
     e.min_sz = std::max<uint64_t>(e.min_sz, 1);
     e.max_sz = std::max<uint64_t>(e.max_sz, base);
     e.target = std::clamp(e.target, e.min_sz, e.max_sz);
     return e;
+}
+
+uint64_t pick_feed_size(const SplitEnv& env, bool& warning) {
+    warning = false;
+    if (env.max_mem == 0 || env.max_sz == 0) return kChunkFeedDefault;
+    if (env.max_mem <= env.max_sz) {
+        // Not even one chunk's worth of buffer fits the budget; the chunker
+        // must hold up to max_sz regardless, so shrinking the feed block would
+        // only make the scan slower without honoring the budget.
+        warning = true;
+        return kChunkFeedDefault;
+    }
+    const uint64_t enlarged =
+        std::min<uint64_t>((env.max_mem - env.max_sz) / 2, env.max_sz);
+    if (enlarged > kChunkFeedDefault) return enlarged;
+    if (env.max_mem < env.max_sz + 2 * kChunkFeedDefault) warning = true;
+    return kChunkFeedDefault;
 }
 
 namespace {
@@ -53,9 +71,9 @@ constexpr uint64_t kFloor = 64;
 // Feed fastcdc in large blocks: its Process() memmoves the unconsumed
 // trailing buffer on every call, so small reads make large-target chunking
 // superlinear (e.g. ~1024 * ~256 MiB self-memmoves per 1 GiB chunk at a
-// 1 GiB average). 64 MiB reads keep that overhead negligible for real
-// workloads while bounding memory use.
-constexpr uint64_t kBuf = 64ULL << 20;
+// 1 GiB average). kChunkFeedDefault (64 MiB) bounds memory use while keeping
+// that overhead negligible for real workloads; --max-mem enlarges the block
+// within a RAM budget (see pick_feed_size).
 
 using cdc_ft::fastcdc::Chunker;
 using cdc_ft::fastcdc::Config;
@@ -114,7 +132,9 @@ bool content_boundaries(FILE* f, uint64_t size, const SplitEnv& env,
     if (size <= env.max_sz) return true;
     if (env.min_sz == 0 || env.target < env.min_sz || env.max_sz < env.target) return true;
 
-    std::vector<uint8_t> buf(kBuf);
+    const size_t feed = env.feed_sz > 0 ? static_cast<size_t>(env.feed_sz)
+                                        : static_cast<size_t>(kChunkFeedDefault);
+    std::vector<uint8_t> buf(feed);
     std::vector<uint64_t> raw;
     Config cfg(static_cast<size_t>(env.min_sz), static_cast<size_t>(env.target),
                static_cast<size_t>(env.max_sz));
@@ -124,7 +144,7 @@ bool content_boundaries(FILE* f, uint64_t size, const SplitEnv& env,
         raw.push_back(pos);
     });
     for (;;) {
-        const size_t n = std::fread(buf.data(), 1, kBuf, f);
+        const size_t n = std::fread(buf.data(), 1, feed, f);
         if (n == 0) {
             if (std::ferror(f) != 0) return false;
             break;

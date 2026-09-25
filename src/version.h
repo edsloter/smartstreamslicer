@@ -21,9 +21,9 @@
 #include <string>
 
 #define SSS_VERSION_MAJOR 0
-#define SSS_VERSION_MINOR 0
+#define SSS_VERSION_MINOR 1
 #define SSS_VERSION_PATCH 1
-#define SSS_VERSION_STRING "0.0.1"
+#define SSS_VERSION_STRING "0.1.1"
 
 namespace sss {
 

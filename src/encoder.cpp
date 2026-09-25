@@ -400,6 +400,17 @@ Rc encode(const Options& o) {
         env.max_sz = std::max<uint64_t>(dmax, env.target);
         env.target = std::clamp(env.target, env.min_sz, env.max_sz);
     }
+    if (o.max_mem != 0) {
+        bool feed_warn = false;
+        env.feed_sz = pick_feed_size(env, feed_warn);
+        if (feed_warn) {
+            log_warn("--max-mem " + human_size(o.max_mem) +
+                     " is smaller than the content scan's working set for this "
+                     "target (" + human_size(env.max_sz + 2 * kChunkFeedDefault) +
+                     "); the feed block was not enlarged and RAM use may exceed "
+                     "the budget");
+        }
+    }
     if (env.max_sz < kMinPart) {
         log_error("--max (or derived chunk size) is too small to hold stream metadata");
         if (spool) std::fclose(spool);

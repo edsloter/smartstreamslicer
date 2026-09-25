@@ -29,9 +29,25 @@ struct SplitEnv {
     uint64_t target = 0;
     uint64_t min_sz = 0;
     uint64_t max_sz = 0;
+    uint64_t max_mem = 0;  // --max-mem RAM budget (0 = unset)
+    uint64_t feed_sz = 0;  // selected scan feed block (0 = default)
 };
 
 SplitEnv make_split_env(const Options& o);
+
+// Default read/feed block for the content-detection scan. Larger blocks
+// amortize the FastCDC chunker's internal buffering (see chunker.cpp); the
+// --max-mem flag enlarges the block inside a RAM budget without ever changing
+// chunk sizing, so output stays byte-identical with or without it.
+inline constexpr uint64_t kChunkFeedDefault = 64ULL << 20;
+
+// Picks the scan feed block for the given environment. Honors env.max_mem as
+// a working-set budget of roughly (env.max_sz + 2 * feed). Only ever enlarges
+// the feed relative to kChunkFeedDefault; when the budget cannot accommodate
+// even the default block, `warning` is set (the block is kept at the default
+// because a smaller one only slows the scan without shrinking the chunker's
+// own ~max_sz buffer).
+uint64_t pick_feed_size(const SplitEnv& env, bool& warning);
 
 // Streams `size` bytes from `f` (rewound to offset 0) and computes content-
 // defined sub-chunk boundaries with the FastCDC chunker, refined by two

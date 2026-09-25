@@ -4,6 +4,7 @@ param(
   [string]$Ragel,
   [string]$BoostRoot,
   [string]$BuildDir,
+  [Alias('j')]
   [int]$Jobs = 0,
   [switch]$Help
 )
@@ -35,11 +36,14 @@ SmartStreamSlicer all-in-one build script (Windows / MinGW-w64).
   -BuildDir   Output directory (default: 'build' for -Static,
               'build_shared' for a shared build). It is removed and
               recreated, so each run is a clean build.
-  -Jobs       Number of parallel jobs (default: all cores).
+  -Jobs       Number of parallel jobs (default: machine maximum, i.e. all cores).
+              -j is accepted as a shortcut for -Jobs.
 
 The script ensures prerequisites (git submodules, CMake 3.18+, MinGW g++, ragel,
 Boost 1.84 headers) are present - downloading and hash-verifying what is
 missing - then drives the CMake build, which remains the build backend.
+Downloads (Boost) go to a temp-folder cache (override: SSS_CACHE), so reboots
+clean them up automatically and each run re-verifies what it uses.
 "@
   exit 0
 }
@@ -117,10 +121,17 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "[ok] ragel: $ragelPath"
 
 $StaticFlag = if ($Static) { 'ON' } else { 'OFF' }
-$cacheDir = if ($env:SSS_CACHE) { $env:SSS_CACHE } else { Join-Path $env:LOCALAPPDATA 'SmartStreamSlicer\cache' }
+$cacheDir = if ($env:SSS_CACHE) { $env:SSS_CACHE } else { Join-Path ([System.IO.Path]::GetTempPath()) 'SmartStreamSlicer\cache' }
+$legacyCache = Join-Path $env:LOCALAPPDATA 'SmartStreamSlicer'
+if (-not $cacheDir.StartsWith($legacyCache, [System.StringComparison]::OrdinalIgnoreCase) -and
+    (Test-Path -LiteralPath $legacyCache)) {
+  Write-Host "[..] removing legacy cache dir '$legacyCache' (cache now lives in the OS temp folder)..."
+  Remove-Item -LiteralPath $legacyCache -Recurse -Force
+}
 $boostTgz = Join-Path $cacheDir 'boost_1_84_0.tar.gz'
 $boostSha256 = 'A5800F405508F5DF8114558CA9855D2640A2DE8F0445F051FA1C7C3383045724'
 $boostUrl = 'https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.gz'
+$boostDir = Join-Path $cacheDir 'boost_1_84_0'
 $boostArgs = @()
 
 if ($BoostRoot) {
@@ -136,34 +147,46 @@ if ($BoostRoot) {
   $boostArgs = @("-DBOOST_ROOT=$br")
 } else {
   New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
-  if (Test-Path $boostTgz) {
-    $h = (Get-FileHash $boostTgz -Algorithm SHA256).Hash
-    if ($h -ne $boostSha256) {
-      Write-Host "[..] cached boost tarball SHA256 mismatch ($h); re-downloading..."
-      Remove-Item $boostTgz -Force
-    } else {
-      Write-Host "[ok] boost: cached tarball verified (SHA256 $boostSha256)"
+  $vh = Join-Path $boostDir 'boost\version.hpp'
+  if (-not (Test-Path $vh)) {
+    if (Test-Path $boostTgz) {
+      $h = (Get-FileHash $boostTgz -Algorithm SHA256).Hash
+      if ($h -ne $boostSha256) {
+        Write-Host "[..] cached boost tarball SHA256 mismatch ($h); re-downloading..."
+        Remove-Item $boostTgz -Force
+      } else {
+        Write-Host "[ok] boost: cached tarball verified (SHA256 $boostSha256)"
+      }
     }
-  }
-  if (-not (Test-Path $boostTgz)) {
-    Write-Host '[..] downloading boost 1.84.0 headers...'
-    curl.exe -fSL -o $boostTgz $boostUrl
+    if (-not (Test-Path $boostTgz)) {
+      Write-Host '[..] downloading boost 1.84.0 headers...'
+      curl.exe -fSL -o $boostTgz $boostUrl
+      if ($LASTEXITCODE -ne 0) {
+        throw 'boost download failed.'
+      }
+      $h = (Get-FileHash $boostTgz -Algorithm SHA256).Hash
+      if ($h -ne $boostSha256) {
+        throw "downloaded boost tarball SHA256 mismatch ($h)."
+      }
+    }
+    if (Test-Path $boostDir) {
+      Remove-Item $boostDir -Recurse -Force
+    }
+    Write-Host "[..] extracting boost headers into $cacheDir..."
+    & tar -xzf $boostTgz -C $cacheDir
     if ($LASTEXITCODE -ne 0) {
-      throw 'boost download failed.'
+      throw 'boost extraction failed.'
     }
-    $h = (Get-FileHash $boostTgz -Algorithm SHA256).Hash
-    if ($h -ne $boostSha256) {
-      throw "downloaded boost tarball SHA256 mismatch ($h)."
+    if (-not (Test-Path $vh)) {
+      throw 'boost extraction produced no boost/version.hpp.'
     }
   }
+  Write-Host "[ok] boost: headers in $boostDir"
+  $boostArgs = @("-DBOOST_ROOT=$boostDir")
 }
 
 if (Test-Path $BuildDir) {
   Remove-Item $BuildDir -Recurse -Force
-}
-if (-not $BoostRoot) {
-  New-Item -ItemType Directory -Path (Join-Path $BuildDir '_deps') -Force | Out-Null
-  Copy-Item $boostTgz (Join-Path $BuildDir '_deps\boost_1_84_0.tar.gz')
 }
 
 $cmakeArgs = @()
@@ -183,12 +206,9 @@ if ($LASTEXITCODE -ne 0) {
   throw 'cmake configure failed.'
 }
 
-Write-Host '[*] building...'
-if ($Jobs -gt 0) {
-  & cmake --build $BuildDir --parallel $Jobs
-} else {
-  & cmake --build $BuildDir
-}
+$buildJobs = if ($Jobs -gt 0) { $Jobs } else { [Environment]::ProcessorCount }
+Write-Host "[*] building (parallel jobs: $buildJobs)..."
+& cmake --build $BuildDir --parallel $buildJobs
 if ($LASTEXITCODE -ne 0) {
   throw 'cmake build failed.'
 }

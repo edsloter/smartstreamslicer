@@ -1,6 +1,7 @@
 # Build artifacts (covers build/, build_linux/, build_shared/, etc.)
 /build*/
 dist/
+experimental/
 *.o
 *.obj
 *.a

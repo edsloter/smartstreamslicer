@@ -15,12 +15,26 @@ jobs:
         include:
           - os: ubuntu-latest
             static: 'ON'
+            testbin: build/sss
+            shell: bash
           - os: ubuntu-latest
             static: 'OFF'
+            testbin: build/sss
+            shell: bash
           - os: windows-latest
             static: 'ON'
+            testbin: build/sss.exe
+            shell: msys2 {0}
           - os: windows-latest
             static: 'OFF'
+            testbin: build/sss.exe
+            shell: msys2 {0}
+    # Step-level `shell:` rejects expressions (run-step.shell is a plain string
+    # with no contexts); job-level defaults.run.shell allows matrix, so carry
+    # the per-OS shell in the matrix and select it here.
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
     env:
       SMOKE_MANIFEST_DIR: ${{ github.workspace }}/manifest-${{ matrix.os }}-${{ matrix.static }}
     steps:
@@ -47,16 +61,13 @@ jobs:
             mingw-w64-ucrt-x86_64-ragel
 
       - name: Configure
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
         run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSSS_STATIC=${{ matrix.static }}
 
       - name: Build
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
         run: cmake --build build --config Release
 
       - name: Smoke test (encode/decode, determinism, corruption, manifest)
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
-        run: bash tests/smoke.sh ${{ runner.os == 'Windows' && 'build/sss.exe' || 'build/sss' }}
+        run: bash tests/smoke.sh ${{ matrix.testbin }}
 
       - name: Upload manifest
         uses: actions/upload-artifact@v4

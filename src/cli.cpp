@@ -182,6 +182,10 @@ ParseResult parse_args(int argc, char** argv) {
             std::string v;
             if (!take_value(v)) return r;
             if (!apply_size_flag(v, "--max", o.max_sz, r.mode, r.error)) return r;
+        } else if (name == "--max-mem") {
+            std::string v;
+            if (!take_value(v)) return r;
+            if (!apply_size_flag(v, "--max-mem", o.max_mem, r.mode, r.error)) return r;
         } else if (name == "-i" || name == "--input") {
             if (!take_value(o.input)) return r;
         } else if (name == "-o" || name == "--output") {
@@ -308,6 +312,8 @@ void print_short_help(FILE* f) {
                   "  --min SZ             Hard minimum chunk size (default 75%% of target)\n"
                   "  --max SZ             Hard maximum chunk size (default 125%% of target)\n"
                   "  -n, --num-chunks N   Split into exactly N chunks\n"
+                  "  --max-mem SZ         Bound content-scan RAM (k/m/g; default auto).\n"
+                  "                      Output is byte-identical with or without it\n"
                   "\n"
                   "Scheduling:\n"
                   "  -j, --jobs N         Worker threads (0 = system max)\n"
@@ -368,6 +374,16 @@ void print_long_help(FILE* f) {
                   "                      sub-split. Default 125%% of target.\n"
                   "  -n, --num-chunks N  Instead of a target size, split the total size by N\n"
                   "                      and use that as the target (implies --max).\n"
+                  "  --max-mem SZ        Upper bound on RAM for the content-defined\n"
+                  "                      boundary scan. Accepts k/m/g/t suffixes.\n"
+                  "                      This only sizes the read/feed block handed to\n"
+                  "                      the chunker; it never changes chunk sizing, so\n"
+                  "                      the parts are byte-identical whether or not it\n"
+                  "                      is given. Use it on low-RAM machines (e.g.\n"
+                  "                      --max-mem 512m with a large -n target). Without\n"
+                  "                      it a fixed 64 MiB block is used. A budget too\n"
+                  "                      small to hold a single chunk warns and is\n"
+                  "                      ignored.\n"
                   "  --dry-run           Walk inputs, compute the plan, report chunk sizes and\n"
                   "                      counts, and exit without writing anything.\n"
                   "                      Entries are always processed in sorted (path) order so\n"

@@ -2,7 +2,7 @@
 
 A high-performance C++ CLI tool for combining single files or entire directories into a custom streaming container and splitting them into intelligently-sized chunks. Unlike classic tar or raw CDC splitting, `sss` uses pattern-aware splitting that respects file boundaries so chunk contents stay extractable and inspectable.
 
-**Version 0.0.1** — cross-platform (Windows / POSIX), C++17.
+**Version 0.1.1** — cross-platform (Windows / POSIX), C++17.
 
 **Status**: encode/decode pipelines are fully working (file/dir → `.sssNNN` parts and back, with XXH3 integrity and all four stdio combinations). Oversized files are sub-split across parts on content-defined boundaries (FastCDC with Vectorscan-backed run/delimiter refinement), layered onto the same segment map format without breaking compatibility.
 
@@ -16,6 +16,7 @@ A high-performance C++ CLI tool for combining single files or entire directories
 - **stdin/stdout streaming**: All four combinations are supported for both encode (`-e`) and decode (`-d`): file/file, file/stdout, stdin/file, stdin/stdout.
 - **Multithreading**: Split files are produced in parallel (`-j N`, `0` = system max).
 - **Deterministic output**: Entries are always sorted by path, so identical inputs always yield identical streams.
+- **Bounded scan memory**: `--max-mem SZ` caps the RAM used by the content-defined boundary scan (k/m/g/t suffixes). It only sizes the read/feed buffer handed to the chunker — it never changes chunking parameters — so output stays byte-identical with or without it.
 - **File lists**: Pass a `.txt` manifest with `--file-list=` for batch operations, with optional filters via `--ignore` and `--ignore-dot`.
 - **Smart chunk counts**: `-n N` splits into `N` chunks by size, instead of using a target size.
 - **Versioned format**: Format versioning baked into headers so old encodings stay decodable across versions.
@@ -41,7 +42,7 @@ one-liner would silently produce a degraded binary and is not supported.
 - **Boost headers** — Vectorscan needs only Boost headers. If `BOOST_ROOT` does not point at
   an existing Boost (i.e. `$BOOST_ROOT/boost/version.hpp` is present), CMake downloads the
   Boost 1.84.0 release headers from `archives.boost.io` and extracts them into the build tree
-  automatically.
+  automatically, printing a distinct status line for each step (download vs. extract).
 - First configure needs network access to fetch dependencies (xxHash via FetchContent, Boost
   headers unless `BOOST_ROOT` is supplied). `ninja` is recommended for fast parallel builds.
 
@@ -81,7 +82,13 @@ cmake --build build --config Release
 `build.sh` (POSIX) and `build.ps1` (Windows) wrap the whole flow — shallow submodule
 init, dependency checks, auto-installing/downloading anything missing (ragel via the
 system package manager or winget, Boost 1.84.0 headers from `archives.boost.io`), then
-CMake configure/build — and re-verify cached downloads by SHA-256 every run:
+CMake configure/build — and re-verify cached downloads by SHA-256 every run. Boost
+headers download once to the OS temp dir (`%TEMP%\SmartStreamSlicer\cache` on
+Windows, `${TMPDIR:-/tmp}/smartstreamslicer` on POSIX; override with `SSS_CACHE`)
+and are extracted there exactly once. The OS clears these temp folders on reboot
+or periodic temp cleanup, so after a fresh boot the next build simply re-fetches
+once; until then repeat builds pass the extracted tree to CMake via `BOOST_ROOT`,
+with no copying or re-extracting:
 
 ```bash
 # POSIX (native or WSL)
@@ -97,9 +104,9 @@ CMake configure/build — and re-verify cached downloads by SHA-256 every run:
 
 Use `--ragel <path>` / `-Ragel <path>` to point at an existing ragel binary, or
 `--boost-root <dir>` / `-BoostRoot <dir>` (checked for `boost/version.hpp` with
-`BOOST_VERSION 108400`) to skip the Boost download. The scripts are optional — direct
-CMake usage above (with `-DBOOST_ROOT` or an empty build dir that can download Boost)
-works exactly the same.
+`BOOST_VERSION 108400`) to use an existing install instead of the cached one. The
+scripts are optional — direct CMake usage above (with `-DBOOST_ROOT` or an empty build
+dir that can download Boost) works exactly the same.
 
 ### CMake options
 
@@ -108,7 +115,7 @@ works exactly the same.
 | `SSS_STATIC`           | `ON`    | Link bundled libraries statically into one self-contained executable (on Windows this also links the MinGW runtime in). `OFF` produces a shared build: on Windows CMake stages `hs.dll` + `hs_runtime.dll` next to the executable; on Linux `libhs.so.5` must be on the loader path (see `tests/smoke.sh` for the run commands). |
 | `SSS_ENABLE_VECTORSCAN`| `ON`    | Pattern-aware boundary refinement. Turning it `OFF` yields a degraded binary without Vectorscan support — keep `ON`. |
 | `RAGEL`                | `ragel` | Path to the ragel binary when it is not on `PATH`. |
-| `BOOST_ROOT`           | (auto)  | Leave unset to auto-download Boost headers into the build tree, or point it at an existing Boost. |
+| `BOOST_ROOT`           | (auto)  | Leave unset and CMake downloads/extracts Boost 1.84 headers into the build tree; or point it at an existing Boost to skip that step (the build scripts do this automatically with their cache). |
 
 All build flavors — `SSS_STATIC` ON or OFF, Windows or POSIX — produce **format-compatible
 output**: the stream format is versioned, encoding is deterministic, and any build can
@@ -133,6 +140,10 @@ sss -d -i - -o "extracted/"
 
 # Split by number of chunks
 sss -e -i "bigfile" -o "part" -n 8
+
+# Split on a low-RAM machine; --max-mem only tunes the scan buffer, so the
+# parts are byte-identical to an unconstrained encode
+sss -e -i "bigfile" -o "part" -n 16 --max-mem 512m
 
 # Encode using a list of files/dirs, with multithreading
 sss -e -i file_list.txt -o "batch" -j 4
@@ -164,6 +175,9 @@ sss -e -i "folder" -o - -v 0
 --target SZ       Target chunk size, accepts k/m/g suffixes (e.g. 512m, 1g)
 --min SZ          Hard minimum chunk size (default 75% of target)
 --max SZ          Hard maximum chunk size (default 125% of target)
+--max-mem SZ      Bound RAM for the content-scan buffer (k/m/g/t suffixes).
+                  Buffer tuning only; output is byte-identical with or without
+                  it. See "Determinism and --max-mem" below.
 -n N --num-chunks=N  Split into N chunks instead of using a target size
 -i INPUT --input=INPUT    Input file, dir, '-' for stdin
 -o OUTPUT --output=OUTPUT Output base; encode appends .sssNNN (see Output Names)
@@ -183,6 +197,10 @@ Entries are always processed in sorted path order (deterministic output); this i
 
 Positional compatibility: `sss -e "filein" "fileout"` is equivalent to `-i`/`-o` (up to two positionals are accepted when `-i`/`-o` are unset).
 
+### Determinism and `--max-mem`
+
+`--max-mem` is pure buffer tuning. It never alters the chunking parameters — `--target`, `--min`, `--max`, and `-n` are what drive chunk boundaries. It only changes how many bytes at a time the content-defined boundary scan reads and feeds to the chunker (larger feeds amortize FastCDC's internal buffering on large targets). Because content-defined boundaries depend solely on the chunker's `min/avg/max` configuration and the file contents, an encode with `--max-mem` produces **byte-identical `.sssNNN` parts** to an encode without it — on any machine, regardless of the value used. A budget smaller than a single chunk's working set cannot be honored and is reported with a warning.
+
 ### Output Names
 
 The `-o` name is the base and is never modified: encode writes `NAME.sss001`, `NAME.sss002`, and so on. Whether the base already ends in `.sss` or not is irrelevant — `.sssNNN` is always appended — so `-o out` and `-o out.sss` both work and produce `out.sss001` vs `out.sss.sss001`. For more than 1000 parts the digits widen (`NAME.sss1001`); a minimum of two digits is always enforced.
@@ -196,7 +214,7 @@ A stream is a sequence of parts (`.sssNNN` files, or a single concatenated strea
 - **FileEntry** per file stored in the part: name length + name, payload size, payload `XXH3` checksum, and a **file chunk offset map** — a list of `{part index, offset within part, length}` segments describing exactly where every byte of the file lives. Oversized files are sub-split across parts, and each part hosting the file repeats its entry with the complete offset map so every part is individually decodable.
 - **ChunkFooter** (20 bytes): magic `CSTR`, streaming `XXH3` checksum of everything after the `StreamHeader` (chunk header + metadata + payload), and the part size — appended at the end so encode/decode can stream through non-seekable stdio without rewriting headers.
 
-The version field carries the encoding app's SemVer (packed as `MAJOR*1e6 + MINOR*1e3 + PATCH`, e.g. `v0.0.1`). An old decoder is  assumed readable to new encode: if a decoder reads a stream whose version is larger than its own, it warns that a newer release may be available at <https://github.com/edsloter/smartstreamslicer> and still attempts the decode, repeating the warning if decoding fails.
+The version field carries the encoding app's SemVer (packed as `MAJOR*1e6 + MINOR*1e3 + PATCH`, e.g. `v0.1.1`). An old decoder is  assumed readable to new encode: if a decoder reads a stream whose version is larger than its own, it warns that a newer release may be available at <https://github.com/edsloter/smartstreamslicer> and still attempts the decode, repeating the warning if decoding fails.
 
 ### Streaming notes
 

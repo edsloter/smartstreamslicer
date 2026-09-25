@@ -40,6 +40,7 @@ struct Options {
     uint64_t target = 0;
     uint64_t min_sz = 0;
     uint64_t max_sz = 0;
+    uint64_t max_mem = 0;
     uint64_t num_chunks = 0;
     bool num_chunks_set = false;
 

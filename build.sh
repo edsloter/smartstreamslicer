@@ -16,11 +16,13 @@ SmartStreamSlicer all-in-one build script (POSIX).
   --build-dir  Output directory (default: build_linux for -static,
                build_linux_shared otherwise). It is removed and
                recreated, so each run is a clean build.
-  -j           Number of parallel jobs (default: all cores).
+  -j           Number of parallel jobs (default: machine maximum, i.e. all cores).
 
 The script ensures prerequisites (git submodules, CMake 3.18+, a C++ compiler,
 ragel, Boost 1.84 headers) are present - downloading and hash-verifying what is
 missing - then drives the CMake build, which remains the build backend.
+Downloads (Boost) go to a temp-dir cache (override: SSS_CACHE), so reboots
+clean them up automatically and each run re-verifies what it uses.
 EOF
   exit 0
 }
@@ -103,10 +105,16 @@ fi
 "$RAGEL_PATH" -v >/dev/null 2>&1 || fail "ragel at '$RAGEL_PATH' failed to run."
 echo "[ok] ragel: $RAGEL_PATH"
 
-CACHE_DIR="${SSS_CACHE:-$HOME/.cache/smartstreamslicer}"
+CACHE_DIR="${SSS_CACHE:-${TMPDIR:-/tmp}/smartstreamslicer}"
+LEGACY_CACHE="$HOME/.cache/smartstreamslicer"
+if [ "$CACHE_DIR" != "$LEGACY_CACHE" ] && [ -d "$LEGACY_CACHE" ]; then
+  echo "[..] removing legacy cache dir $LEGACY_CACHE (cache now lives in the OS temp dir)..."
+  rm -rf "$LEGACY_CACHE"
+fi
 BOOST_TGZ="$CACHE_DIR/boost_1_84_0.tar.gz"
 BOOST_SHA256="a5800f405508f5df8114558ca9855d2640a2de8f0445f051fa1c7c3383045724"
 BOOST_URL="https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.gz"
+BOOST_DIR="$CACHE_DIR/boost_1_84_0"
 BOOST_ARGS=()
 
 hashtest() {
@@ -123,47 +131,57 @@ if [ -n "$BOOST_ROOT_DIR" ]; then
   BOOST_ARGS+=("-DBOOST_ROOT=$BOOST_ROOT_DIR")
 else
   mkdir -p "$CACHE_DIR"
-  if [ -f "$BOOST_TGZ" ]; then
-    if [ "$(hashtest "$BOOST_TGZ")" = "$BOOST_SHA256" ]; then
-      echo "[ok] boost: cached tarball verified (SHA256 $BOOST_SHA256)"
-    else
-      echo "[..] cached boost tarball SHA256 mismatch; re-downloading..."
-      rm -f "$BOOST_TGZ"
+  if [ ! -f "$BOOST_DIR/boost/version.hpp" ]; then
+    if [ -f "$BOOST_TGZ" ]; then
+      if [ "$(hashtest "$BOOST_TGZ")" = "$BOOST_SHA256" ]; then
+        echo "[ok] boost: cached tarball verified (SHA256 $BOOST_SHA256)"
+      else
+        echo "[..] cached boost tarball SHA256 mismatch; re-downloading..."
+        rm -f "$BOOST_TGZ"
+      fi
     fi
-  fi
-  if [ ! -f "$BOOST_TGZ" ]; then
-    echo "[..] downloading boost 1.84.0 headers..."
-    if have curl; then
-      curl -fSL -o "$BOOST_TGZ" "$BOOST_URL"
-    elif have wget; then
-      wget -O "$BOOST_TGZ" "$BOOST_URL"
-    else
-      fail "need curl or wget to download boost."
+    if [ ! -f "$BOOST_TGZ" ]; then
+      echo "[..] downloading boost 1.84.0 headers..."
+      if have curl; then
+        curl -fSL -o "$BOOST_TGZ" "$BOOST_URL"
+      elif have wget; then
+        wget -O "$BOOST_TGZ" "$BOOST_URL"
+      else
+        fail "need curl or wget to download boost."
+      fi
+      [ "$(hashtest "$BOOST_TGZ")" = "$BOOST_SHA256" ] || fail "downloaded boost tarball SHA256 mismatch."
     fi
-    [ "$(hashtest "$BOOST_TGZ")" = "$BOOST_SHA256" ] || fail "downloaded boost tarball SHA256 mismatch."
+    rm -rf "$BOOST_DIR" 2>/dev/null || true
+    echo "[..] extracting boost headers into $CACHE_DIR..."
+    tar -xzf "$BOOST_TGZ" -C "$CACHE_DIR"
+    [ -f "$BOOST_DIR/boost/version.hpp" ] || fail "boost extraction produced no boost/version.hpp."
   fi
+  echo "[ok] boost: headers in $BOOST_DIR"
+  BOOST_ARGS+=("-DBOOST_ROOT=$BOOST_DIR")
 fi
 
 [ -e "$BUILD_DIR" ] && rm -rf "$BUILD_DIR"
-if [ -z "$BOOST_ROOT_DIR" ]; then
-  mkdir -p "$BUILD_DIR/_deps"
-  cp "$BOOST_TGZ" "$BUILD_DIR/_deps/"
-fi
 
 GENERATOR="Unix Makefiles"
 if have ninja; then GENERATOR="Ninja"; fi
+
+if [ -z "$JOBS" ]; then
+  if have nproc; then
+    JOBS="$(nproc)"
+  elif have getconf; then
+    JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+  else
+    JOBS=1
+  fi
+fi
 
 echo "[*] configuring (SSS_STATIC=$STATIC) via cmake..."
 cmake -S "$REPO_ROOT" -B "$BUILD_DIR" -G "$GENERATOR" \
   -DCMAKE_BUILD_TYPE=Release "-DSSS_STATIC=$STATIC" "-DRAGEL=$RAGEL_PATH" \
   "${BOOST_ARGS[@]}"
 
-echo "[*] building..."
-if [ -n "$JOBS" ]; then
-  cmake --build "$BUILD_DIR" -j "$JOBS"
-else
-  cmake --build "$BUILD_DIR"
-fi
+echo "[*] building (parallel jobs: $JOBS)..."
+cmake --build "$BUILD_DIR" -j "$JOBS"
 
 BIN="$BUILD_DIR/sss"
 [ -x "$BIN" ] || fail "expected binary not found: $BIN"
